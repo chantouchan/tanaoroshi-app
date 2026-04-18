@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import json
-from datetime import date
+import random
+from datetime import date, timedelta
 from pathlib import Path
 
 DATA_DIR = Path("data")
@@ -18,12 +19,20 @@ def save_json(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def get_items():
-    return load_json(ITEMS_FILE, DEFAULT_ITEMS)
+    items = load_json(ITEMS_FILE, None)
+    if items is None:
+        save_json(ITEMS_FILE, DEFAULT_ITEMS)
+        return DEFAULT_ITEMS
+    return items
 
 def get_records():
-    return load_json(RECORDS_FILE, [])
+    records = load_json(RECORDS_FILE, None)
+    if records is None:
+        demo = generate_demo_records()
+        save_json(RECORDS_FILE, demo)
+        return demo
+    return records
 
-# === 信濃路 店舗一覧 ===
 STORES = [
     "セントラルキッチン",
     "キーノ和歌山市駅店",
@@ -38,7 +47,6 @@ STORES = [
     "しなの路 打田店",
 ]
 
-# === 商品マスタ（そば・うどん業態） ===
 DEFAULT_ITEMS = [
     {"id":"M001","name":"そば粉","category":"麺類原材料","unit":"kg","price":800,"min_stock":10},
     {"id":"M002","name":"うどん粉（中力粉）","category":"麺類原材料","unit":"kg","price":300,"min_stock":20},
@@ -65,9 +73,65 @@ DEFAULT_ITEMS = [
     {"id":"C003","name":"ナプキン","category":"消耗品","unit":"枚","price":2,"min_stock":500},
 ]
 
+def generate_demo_records():
+    random.seed(42)
+    records = []
+    today = date.today()
+    dates = [str(today), str(today - timedelta(days=30)), str(today - timedelta(days=60))]
+
+    store_scale = {
+        "セントラルキッチン": 5.0,
+        "キーノ和歌山市駅店": 1.2,
+        "日赤和歌山医療センター店": 0.6,
+        "かつらぎ店": 1.0,
+        "海南店": 1.0,
+        "岩出バイパス店": 1.1,
+        "国体道路店": 1.0,
+        "四ヶ郷店": 0.9,
+        "鳴神店": 1.0,
+        "ダイワロイネット和歌山店": 1.3,
+        "しなの路 打田店": 0.8,
+    }
+
+    for d in dates:
+        for store in STORES:
+            scale = store_scale.get(store, 1.0)
+            for item in DEFAULT_ITEMS:
+                base_qty = item["min_stock"] * scale
+                if item["unit"] in ["食", "本", "枚", "膳", "個"]:
+                    unopened = max(0, int(random.gauss(base_qty * 1.5, base_qty * 0.4)))
+                    opened_pct = random.choice([0, 0, 0, 10, 20, 30, 50])
+                else:
+                    unopened = max(0, int(random.gauss(base_qty * 1.3, base_qty * 0.3)))
+                    opened_pct = random.choice([0, 10, 20, 30, 40, 50, 60, 70, 80])
+
+                # 一部の店舗で在庫少を意図的に作る（アラート用）
+                if store == "日赤和歌山医療センター店" and item["id"] in ["M003", "P001", "T003"]:
+                    unopened = random.randint(0, 2)
+                    opened_pct = random.choice([0, 30])
+                if store == "しなの路 打田店" and item["id"] in ["S002", "C001"]:
+                    unopened = random.randint(0, 3)
+                    opened_pct = 0
+                if store == "四ヶ郷店" and item["id"] in ["T001", "P003"]:
+                    unopened = random.randint(1, 3)
+                    opened_pct = 0
+
+                total_qty = round(unopened + opened_pct / 100, 2)
+                subtotal = round(total_qty * item["price"])
+
+                if total_qty > 0:
+                    records.append({
+                        "store": store, "date": d, "item_id": item["id"],
+                        "item_name": item["name"], "category": item["category"],
+                        "unit": item["unit"], "price": item["price"],
+                        "unopened": unopened, "opened_pct": opened_pct,
+                        "total_qty": total_qty, "subtotal": subtotal
+                    })
+    return records
+
 st.set_page_config(page_title="信濃路 棚卸し管理", page_icon="🍜", layout="wide")
 
-mode = st.sidebar.selectbox("メニュー", ["棚卸し入力", "本部ダッシュボード", "商品マスタ管理"])
+mode = st.sidebar.selectbox("メニュー", ["本部ダッシュボード", "棚卸し入力", "商品マスタ管理"])
 
 # ==========================================
 # 棚卸し入力
@@ -176,6 +240,22 @@ elif mode == "本部ダッシュボード":
 
     st.divider()
 
+    # 前月比較
+    if len(dates) >= 2:
+        st.markdown("### 📉 前月との比較")
+        prev_date = dates[1] if dates[0] == selected_date and len(dates) > 1 else dates[0]
+        prev_df = df[df["date"] == prev_date]
+        cur_total = day_df["subtotal"].sum()
+        prev_total = prev_df["subtotal"].sum()
+        diff = cur_total - prev_total
+        diff_pct = (diff / prev_total * 100) if prev_total > 0 else 0
+        col1, col2, col3 = st.columns(3)
+        col1.metric("今回", f"¥{cur_total:,.0f}")
+        col2.metric("前回", f"¥{prev_total:,.0f}")
+        col3.metric("増減", f"¥{diff:,.0f}", delta=f"{diff_pct:+.1f}%")
+
+        st.divider()
+
     st.markdown("### 📋 明細データ")
     detail = day_df[["store", "category", "item_name", "unopened", "opened_pct", "total_qty", "price", "subtotal"]].copy()
     detail.columns = ["店舗", "カテゴリ", "商品名", "未開封", "開封残%", "合計数量", "単価", "金額"]
@@ -214,6 +294,15 @@ elif mode == "商品マスタ管理":
                 st.rerun()
             else:
                 st.error("商品名を入力してください。")
+
+    st.subheader("🗑️ データリセット")
+    if st.button("全データリセット（注意）"):
+        if RECORDS_FILE.exists():
+            RECORDS_FILE.unlink()
+        if ITEMS_FILE.exists():
+            ITEMS_FILE.unlink()
+        st.success("リセットしました。")
+        st.rerun()
 
 st.divider()
 st.caption("© 2026 信濃路グループ 棚卸し管理システム")
