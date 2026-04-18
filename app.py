@@ -78,21 +78,13 @@ def generate_demo_records():
     records = []
     today = date.today()
     dates = [str(today), str(today - timedelta(days=30)), str(today - timedelta(days=60))]
-
     store_scale = {
-        "セントラルキッチン": 5.0,
-        "キーノ和歌山市駅店": 1.2,
-        "日赤和歌山医療センター店": 0.6,
-        "かつらぎ店": 1.0,
-        "海南店": 1.0,
-        "岩出バイパス店": 1.1,
-        "国体道路店": 1.0,
-        "四ヶ郷店": 0.9,
-        "鳴神店": 1.0,
-        "ダイワロイネット和歌山店": 1.3,
+        "セントラルキッチン": 5.0, "キーノ和歌山市駅店": 1.2,
+        "日赤和歌山医療センター店": 0.6, "かつらぎ店": 1.0,
+        "海南店": 1.0, "岩出バイパス店": 1.1, "国体道路店": 1.0,
+        "四ヶ郷店": 0.9, "鳴神店": 1.0, "ダイワロイネット和歌山店": 1.3,
         "しなの路 打田店": 0.8,
     }
-
     for d in dates:
         for store in STORES:
             scale = store_scale.get(store, 1.0)
@@ -104,8 +96,6 @@ def generate_demo_records():
                 else:
                     unopened = max(0, int(random.gauss(base_qty * 1.3, base_qty * 0.3)))
                     opened_pct = random.choice([0, 10, 20, 30, 40, 50, 60, 70, 80])
-
-                # 一部の店舗で在庫少を意図的に作る（アラート用）
                 if store == "日赤和歌山医療センター店" and item["id"] in ["M003", "P001", "T003"]:
                     unopened = random.randint(0, 2)
                     opened_pct = random.choice([0, 30])
@@ -115,10 +105,8 @@ def generate_demo_records():
                 if store == "四ヶ郷店" and item["id"] in ["T001", "P003"]:
                     unopened = random.randint(1, 3)
                     opened_pct = 0
-
                 total_qty = round(unopened + opened_pct / 100, 2)
                 subtotal = round(total_qty * item["price"])
-
                 if total_qty > 0:
                     records.append({
                         "store": store, "date": d, "item_id": item["id"],
@@ -131,46 +119,73 @@ def generate_demo_records():
 
 st.set_page_config(page_title="信濃路 棚卸し管理", page_icon="🍜", layout="wide")
 
-mode = st.sidebar.selectbox("メニュー", ["本部ダッシュボード", "棚卸し入力", "商品マスタ管理"])
+mode = st.sidebar.selectbox("メニュー", ["棚卸し入力", "本部ダッシュボード", "商品マスタ管理"])
 
 # ==========================================
-# 棚卸し入力
+# 棚卸し入力（1品ずつプルダウン選択式）
 # ==========================================
 if mode == "棚卸し入力":
     st.title("🍜 信濃路 棚卸し入力")
     store = st.selectbox("店舗を選択", STORES)
     inv_date = st.date_input("棚卸し日", value=date.today())
     items = get_items()
-    categories = sorted(set(i["category"] for i in items))
-    cat_filter = st.selectbox("カテゴリ", ["すべて"] + categories)
-    filtered = items if cat_filter == "すべて" else [i for i in items if i["category"] == cat_filter]
 
-    st.caption("未開封数と開封済み残量（%）を入力してください")
-    entries = []
-    for item in filtered:
-        with st.container():
-            cols = st.columns([3, 1, 1, 1])
-            cols[0].markdown(f"**{item['name']}**（{item['unit']}・¥{item['price']:,}）")
-            unopened = cols[1].number_input("未開封", min_value=0, value=0, key=f"u_{item['id']}")
-            opened_pct = cols[2].number_input("開封残%", min_value=0, max_value=100, value=0, step=10, key=f"o_{item['id']}")
-            total_qty = unopened + opened_pct / 100
-            subtotal = total_qty * item["price"]
-            cols[3].markdown(f"計 **{total_qty:.1f}** {item['unit']}<br>¥{subtotal:,.0f}", unsafe_allow_html=True)
-            entries.append({
-                "store": store, "date": str(inv_date), "item_id": item["id"],
-                "item_name": item["name"], "category": item["category"],
-                "unit": item["unit"], "price": item["price"],
-                "unopened": unopened, "opened_pct": opened_pct,
-                "total_qty": round(total_qty, 2), "subtotal": round(subtotal)
-            })
+    # 今日この店舗で既に入力済みのデータを表示
+    records = get_records()
+    today_records = [r for r in records if r["store"] == store and r["date"] == str(inv_date)]
 
-    if st.button("💾 保存する", type="primary", use_container_width=True):
-        records = get_records()
-        records = [r for r in records if not (r["store"] == store and r["date"] == str(inv_date))]
-        records.extend([e for e in entries if e["total_qty"] > 0])
-        save_json(RECORDS_FILE, records)
-        st.success(f"✅ {store}の棚卸しデータを保存しました！")
-        st.rerun()
+    if today_records:
+        st.markdown("### ✅ 入力済み")
+        today_df = pd.DataFrame(today_records)
+        display_df = today_df[["item_name", "category", "unopened", "opened_pct", "total_qty", "subtotal"]].copy()
+        display_df.columns = ["商品名", "カテゴリ", "未開封", "開封残%", "合計数量", "金額"]
+        display_df["金額"] = display_df["金額"].apply(lambda x: f"¥{x:,.0f}")
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        st.metric("入力済み合計", f"¥{today_df['subtotal'].sum():,.0f}")
+        st.divider()
+
+    # 商品選択（プルダウン・検索対応）
+    st.markdown("### ➕ 商品を入力")
+    item_names = [f"{i['name']}（{i['category']}）" for i in items]
+    selected_item_label = st.selectbox(
+        "商品を選択（頭文字を入力して検索）",
+        options=["選択してください"] + item_names,
+    )
+
+    if selected_item_label != "選択してください":
+        idx = item_names.index(selected_item_label)
+        item = items[idx]
+
+        st.info(f"**{item['name']}** ／ {item['category']} ／ 単位：{item['unit']} ／ 単価：¥{item['price']:,} ／ 最低在庫：{item['min_stock']}")
+
+        col1, col2 = st.columns(2)
+        unopened = col1.number_input("未開封数", min_value=0, value=0, key="input_unopened")
+        opened_pct = col2.number_input("開封済み残量（%）", min_value=0, max_value=100, value=0, step=10, key="input_opened")
+
+        total_qty = unopened + opened_pct / 100
+        subtotal = total_qty * item["price"]
+
+        col3, col4 = st.columns(2)
+        col3.metric("合計数量", f"{total_qty:.1f} {item['unit']}")
+        col4.metric("金額", f"¥{subtotal:,.0f}")
+
+        if st.button("💾 この商品を保存", type="primary", use_container_width=True):
+            if total_qty <= 0:
+                st.error("数量を入力してください。")
+            else:
+                entry = {
+                    "store": store, "date": str(inv_date), "item_id": item["id"],
+                    "item_name": item["name"], "category": item["category"],
+                    "unit": item["unit"], "price": item["price"],
+                    "unopened": unopened, "opened_pct": opened_pct,
+                    "total_qty": round(total_qty, 2), "subtotal": round(subtotal)
+                }
+                # 同じ店舗・日付・商品があれば上書き
+                records = [r for r in records if not (r["store"] == store and r["date"] == str(inv_date) and r["item_id"] == item["id"])]
+                records.append(entry)
+                save_json(RECORDS_FILE, records)
+                st.success(f"✅ {item['name']} を保存しました！")
+                st.rerun()
 
 # ==========================================
 # 本部ダッシュボード
@@ -240,7 +255,6 @@ elif mode == "本部ダッシュボード":
 
     st.divider()
 
-    # 前月比較
     if len(dates) >= 2:
         st.markdown("### 📉 前月との比較")
         prev_date = dates[1] if dates[0] == selected_date and len(dates) > 1 else dates[0]
@@ -253,7 +267,6 @@ elif mode == "本部ダッシュボード":
         col1.metric("今回", f"¥{cur_total:,.0f}")
         col2.metric("前回", f"¥{prev_total:,.0f}")
         col3.metric("増減", f"¥{diff:,.0f}", delta=f"{diff_pct:+.1f}%")
-
         st.divider()
 
     st.markdown("### 📋 明細データ")
